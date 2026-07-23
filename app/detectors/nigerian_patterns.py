@@ -61,13 +61,45 @@ plate_recognizer = PatternRecognizer(
 # Voter's Identification Number (INEC PVC) - 19-character grouped alphanumeric,
 # e.g. "804R DFT9 2617 3628 1038". First draft based on limited real samples -
 # revisit if you see VINs formatted differently.
+#
+# KNOWN ISSUE (fixed below via validate_result, not by tightening the regex):
+# Presidio compiles patterns with re.IGNORECASE by default, and the optional
+# [\s-]? separators mean this shape - "roughly 17-20 alnum chars, loosely
+# chunked into 4s" - is satisfied by ordinary English prose purely by
+# coincidence (e.g. "from underrepresented" breaks perfectly into
+# from|unde|rrep|rese|nted). The regex can't fix this by itself without
+# becoming unreadable, so VinRecognizer below adds a post-match digit-density
+# check instead: real VINs are digit-heavy (the sample above is ~84% digits),
+# ordinary prose isn't.
 VIN_NG = Pattern(
     "NG_VIN",
     r"\b[A-Z0-9]{4}[\s-]?[A-Z0-9]{4}[\s-]?[A-Z0-9]{4}[\s-]?[A-Z0-9]{4}[\s-]?[A-Z0-9]{1,4}\b",
     0.7
 )
 
-vin_recognizer = PatternRecognizer(
+
+class VinRecognizer(PatternRecognizer):
+    """
+    Adds a digit-density check on top of the plain VIN_NG regex match.
+    The regex alone only constrains length and character class (grouped
+    4-char alnum blocks), which ordinary prose satisfies by coincidence
+    often enough to flood results. validate_result() runs after the regex
+    matches and rejects anything that isn't digit-dense enough, without
+    weakening what the regex itself accepts (so it still tolerates
+    formatting variants you haven't seen yet).
+    """
+
+    MIN_DIGIT_RATIO = 0.5  # real sample is ~0.84; 0.5 leaves margin for format variants
+
+    def validate_result(self, pattern_text: str):
+        alnum_chars = [c for c in pattern_text if c.isalnum()]
+        if not alnum_chars:
+            return False
+        digit_ratio = sum(c.isdigit() for c in alnum_chars) / len(alnum_chars)
+        return digit_ratio >= self.MIN_DIGIT_RATIO
+
+
+vin_recognizer = VinRecognizer(
     supported_entity="NG_VIN",
     patterns=[VIN_NG],
     context=["VIN", "voter", "PVC", "permanent voter card", "voter registration"]
@@ -208,7 +240,28 @@ if __name__ == "__main__":
         "Voter's Identification Number (VIN): 804R DFT9 2617 3628 1038"
     )
 
+    print("--- True positive check ---")
     results = analyzer.analyze(text=test_text, language="en")
-
     for r in sorted(results, key=lambda x: x.start):
         print(f"{r.entity_type}: '{test_text[r.start:r.end]}' (score: {r.score:.2f})")
+
+    # Regression test for the false-positive flood: ordinary prose that
+    # happens to be dense with 4-letter-ish word chunks and short spacing,
+    # similar to what triggered the original NG_VIN bug against real PDF text.
+    prose_text = (
+        "Existing solutions for automated redaction risk exposing sensitive "
+        "personal information, particularly for underrepresented groups in "
+        "Nigeria, which makes reducing regional bias an increasingly critical "
+        "goal when working with specific datasets and specific identifiers, "
+        "even without reliable internet connectivity."
+    )
+
+    print("\n--- False-positive regression check (expect NO NG_VIN hits) ---")
+    prose_results = [
+        r for r in analyzer.analyze(text=prose_text, language="en", entities=["NG_VIN"])
+    ]
+    if not prose_results:
+        print("OK: no false NG_VIN matches in plain prose.")
+    else:
+        for r in prose_results:
+            print(f"UNEXPECTED MATCH: '{prose_text[r.start:r.end]}' (score: {r.score:.2f})")

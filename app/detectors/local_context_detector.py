@@ -83,12 +83,22 @@ NIGERIAN_NAME_FRAGMENTS = {
     "adebayo", "adeyemi", "oluwaseun", "folake", "olamide", "temitope",
     "adewale", "oluwafemi", "bunmi", "yetunde", "babatunde", "ayodele",
     "olusegun", "abiodun", "oyinlola", "adeola", "kehinde", "taiwo",
-    "olawale", "adekunle", "ogundipe", "afolabi", "ade",
+    "olawale", "adekunle", "ogundipe", "afolabi", "ade", "oladele",
     # Hausa / Fulani
     "abdullahi", "ibrahim", "musa", "aisha", "fatima", "yusuf", "sani",
     "bello", "aliyu", "hassan", "hussaini", "muhammad", "mohammed",
     "abubakar", "garba", "usman", "suleiman", "zainab", "hadiza",
     "amina", "yakubu",
+    # Common Nigerian Christian/English given names - used broadly across
+    # ethnic groups, usually paired with an indigenous surname or vice
+    # versa ("Oladele Peter", "Emeka Daniel", "Grace Adewale"). Without
+    # these, any name where only one word is ethnic-specific and the
+    # other is a Western/biblical given name scores 0 on that word and
+    # can fall under the 0.5 fragment threshold entirely.
+    "peter", "john", "james", "paul", "mary", "grace", "victoria",
+    "comfort", "blessing", "joseph", "daniel", "david", "samuel",
+    "emmanuel", "elizabeth", "faith", "peace", "precious", "patience",
+    "joy", "praise", "goodness", "esther", "ruth", "deborah",
 }
 
 
@@ -251,3 +261,14 @@ if __name__ == "__main__":
                 f"score {d['score']:.2f}) "
                 f"{'OK' if match_ok else 'MISMATCH: got ' + repr(recovered)}"
             )
+
+    # Regression test: mixed indigenous + Western given-name pair with no
+    # title/label anchor nearby, previously missed because neither word
+    # individually cleared the 0.5 fragment-score threshold.
+    print("\nRegression check: bare mixed-name pair with no title/label anchor")
+    mixed_name_text = "Employee record on file for Oladele Peter, submitted last month."
+    mixed_detections = [d for d in detect_local_context(mixed_name_text) if d["type"] == "PERSON_NAME"]
+    if any(d["text"] == "Oladele Peter" for d in mixed_detections):
+        print("OK: 'Oladele Peter' detected.")
+    else:
+        print(f"STILL MISSING. Detections found: {mixed_detections}")
