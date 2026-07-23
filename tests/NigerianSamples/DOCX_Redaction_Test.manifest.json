@@ -1,0 +1,313 @@
+{
+  "input_path": "tests\\NigerianSamples\\DOCX_Redaction_Test.docx",
+  "file_type": "docx",
+  "created_at": "2026-07-23T11:31:53.418904+00:00",
+  "spans": [
+    {
+      "id": "5ddfd75f-96b2-4a20-b1f2-09e654698f71",
+      "entity_type": "LOCATION",
+      "text": "Europe",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "7007f972-b34b-43ec-92f6-3e3f9ec89111",
+      "entity_type": "LOCATION",
+      "text": "Asia",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "23c4d165-d822-4cb6-adf7-925788218f65",
+      "entity_type": "LOCATION",
+      "text": "America",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "72f90dc5-5eff-4e4d-a80e-965211e2de89",
+      "entity_type": "NG_VIN",
+      "text": "from underrepresented",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "24e48d09-899a-4d7e-8d11-ce86c41cd2e1",
+      "entity_type": "NG_VIN",
+      "text": "Omitogun Oluwatoni",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "d8029d32-88cc-41e3-ade8-de4619c46400",
+      "entity_type": "NG_VIN",
+      "text": "exposing sensitive",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "e7c2321e-5e03-4492-9cac-a171f9c17b44",
+      "entity_type": "NG_VIN",
+      "text": "personal information",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "77ac847c-e362-484c-b638-514c2aca92f8",
+      "entity_type": "NG_VIN",
+      "text": "increasingly critical",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "db1284c6-0be1-48cb-9364-ce3e71aa2c0b",
+      "entity_type": "NG_VIN",
+      "text": "Existing solutions",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "b8f251ac-1dd5-4690-bbed-67a834c1cf63",
+      "entity_type": "NG_VIN",
+      "text": "specific identifiers",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "fc403523-dd76-4e40-8e40-4b198fe81522",
+      "entity_type": "NG_VIN",
+      "text": "specific datasets and",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "0a1d200d-e85a-4db6-8465-446bd784f8fd",
+      "entity_type": "NG_NIN",
+      "text": "49340714800",
+      "source": "presidio",
+      "score": 0.95,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "5976f4a3-4e56-4d79-9211-bb75459f7e96",
+      "entity_type": "US_SSN",
+      "text": "225-44-1989",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "b0502329-2e74-49d1-9112-6cc941f27212",
+      "entity_type": "NG_VIN",
+      "text": "document redaction",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "cc0bbb78-97ff-456e-9800-dccb2bffe293",
+      "entity_type": "NG_VIN",
+      "text": "particularly Nigeria",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "488943c8-d868-427c-9d18-f1e6aa45496c",
+      "entity_type": "NG_VIN",
+      "text": "with Bank Verification",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "ec278554-6df1-4d4d-aa59-d70066bd393f",
+      "entity_type": "NG_BVN",
+      "text": "45189023173",
+      "source": "presidio",
+      "score": 0.6,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "703ec481-fc81-4f77-bef1-543d9e20119f",
+      "entity_type": "ADDRESS",
+      "text": "2, Akeem Shittu Street",
+      "source": "local_context",
+      "score": 0.5,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "45c0c133-7126-4ba2-9605-b723eb5d3e33",
+      "entity_type": "LOCATION",
+      "text": "Ibadan",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "52419476-b8eb-4a1b-852b-aef4947279a5",
+      "entity_type": "STATE_OF_ORIGIN",
+      "text": "Oyo",
+      "source": "local_context",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "11c009ea-b085-4c68-b57a-3e9f1cf33e0d",
+      "entity_type": "LOCATION",
+      "text": "Nigeria",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "8befb562-4153-460b-8e71-8b280cb87433",
+      "entity_type": "NG_VIN",
+      "text": "internet connectivity",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "8b193f34-5632-409f-b015-6ebb1f7aecfc",
+      "entity_type": "NG_VIN",
+      "text": "reducing regional bias",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "f72d2fb3-4911-4611-aa10-377e98bd45af",
+      "entity_type": "PERSON",
+      "text": "Peter",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "05f51627-a56f-4954-adf3-cf4a317c478e",
+      "entity_type": "NG_BVN",
+      "text": "22331019874",
+      "source": "presidio",
+      "score": 0.6,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "7f253fc7-945e-4981-b6ad-f61f4e0dfded",
+      "entity_type": "NG_VIN",
+      "text": "804R DFT9 2617 3628 1038",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "ba90bb99-8ad0-41c8-8629-0348048385c4",
+      "entity_type": "PERSON",
+      "text": "Sanni Ayomide",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "68a91f2b-c549-467c-b675-a17240015080",
+      "entity_type": "NG_BVN",
+      "text": "22154671896",
+      "source": "presidio",
+      "score": 0.6,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "977d0863-a0b5-4416-940c-5694a7e32b81",
+      "entity_type": "NG_BVN",
+      "text": "45612349219",
+      "source": "presidio",
+      "score": 0.6,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "0805dd75-3b02-41d3-a8b4-af005387ddbe",
+      "entity_type": "NG_VIN",
+      "text": "361E QTR4 9172 1628 2618",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "205a5efa-0cf5-4438-a054-6e93a40d2aaa",
+      "entity_type": "PERSON",
+      "text": "Shittu Mariam",
+      "source": "presidio",
+      "score": 0.85,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "128fb6ca-a350-477d-a8c7-a456b77ede76",
+      "entity_type": "NG_BVN",
+      "text": "10139492088",
+      "source": "presidio",
+      "score": 0.6,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "5cab8f2f-2495-4329-98b3-675f994824eb",
+      "entity_type": "NG_BVN",
+      "text": "41171936790",
+      "source": "presidio",
+      "score": 0.6,
+      "location": null,
+      "include": true
+    },
+    {
+      "id": "e42f6a0f-3ebb-4529-98de-7f58e1c41e18",
+      "entity_type": "NG_VIN",
+      "text": "152F QIA1 2819 6291 1028",
+      "source": "presidio",
+      "score": 0.7,
+      "location": null,
+      "include": true
+    }
+  ]
+}
