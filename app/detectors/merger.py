@@ -6,6 +6,10 @@ Combines detection results from all layers of the pipeline:
 - local_context_detector.py (gazetteer + heuristic context detection:
   names, LGAs, states of origin - replaces the old Claude API layer,
   no external calls, no cost)
+- masakhaner_detector.py (mBERT model fine-tuned on MasakhaNER - PERSON
+  entities only, using learned Hausa/Igbo/Yoruba name patterns instead
+  of a curated fragment list, so it generalizes to names
+  local_context_detector's NIGERIAN_NAME_FRAGMENTS list would miss)
 
 Resolves overlapping spans between detectors and returns a single
 deduplicated, sorted list of entities ready for the redactors.
@@ -13,19 +17,38 @@ deduplicated, sorted list of entities ready for the redactors.
 
 from app.detectors.presidio_detector import detect_with_presidio
 from app.detectors.local_context_detector import detect_local_context
+from app.detectors.masakhaner_detector import detect_with_masakhaner
 
 
 # ---------------------------------------------------------------------------
 # Priority rules
 # ---------------------------------------------------------------------------
-# When two detectors flag overlapping spans, this decides which one wins.
-# local_context_detector is preferred for free-text entities (names,
-# places) since Presidio/spaCy's default English NER isn't tuned for
-# Nigerian names. Presidio/regex is preferred for fixed-format entities
-# (IDs, numbers) because it's deterministic and pattern-based there too -
-# for those types both detectors are reliable, so this mostly matters
-# when Presidio's generic PERSON tag disagrees with our gazetteer LGA/
-# state matches on the same span.
+# When two (or more) detectors flag overlapping spans, this decides which
+# one wins. Checked in this order in _pick_winner:
+#
+#   1. MASAKHANER_PREFERRED_TYPES - MasakhaNER wins for PERSON_NAME over
+#      BOTH local_context and Presidio. It's a model trained specifically
+#      on Hausa/Igbo/Yoruba-annotated text, so it generalizes to Nigerian
+#      names local_context_detector's curated fragment list doesn't cover
+#      (e.g. "Oladele" was missing before that fix), and outperforms
+#      Presidio/spaCy's English-tuned PERSON recognizer on the same names.
+#
+#   2. CONTEXT_PREFERRED_TYPES - local_context_detector wins for the
+#      remaining free-text entities (LGAs, states of origin, ethnic
+#      groups, addresses) where Presidio/spaCy's default English NER
+#      isn't tuned for Nigerian-specific terms. Also acts as the PERSON_NAME
+#      fallback whenever MasakhaNER doesn't fire on a given span at all
+#      (no overlap = no conflict = no priority check needed - it just
+#      passes through untouched).
+#
+#   3. PATTERN_PREFERRED_TYPES - Presidio/regex wins for fixed-format
+#      entities (IDs, numbers) since it's deterministic and pattern-based.
+#
+#   4. Fallback: higher confidence score, then longer span.
+
+MASAKHANER_PREFERRED_TYPES = {
+    "PERSON_NAME",
+}
 
 CONTEXT_PREFERRED_TYPES = {
     "PERSON_NAME",
@@ -85,6 +108,12 @@ def _normalize_local_context_results(context_results: list[dict]) -> list[dict]:
     return normalized
 
 
+# masakhaner_detector.py already returns the common shape directly
+# ({"text", "entity_type", "start", "end", "score", "source": "masakhaner"}),
+# so no normalization step is needed for it - unlike local_context_detector
+# above, which uses "type" instead of "entity_type" and has no "source" key.
+
+
 # ---------------------------------------------------------------------------
 # Overlap resolution
 # ---------------------------------------------------------------------------
@@ -101,11 +130,26 @@ def _pick_winner(a: dict, b: dict) -> dict:
     Given two overlapping detections, decide which one to keep.
 
     Priority order:
-    1. Entity-type preference (local_context wins for names/places, patterns win for IDs)
-    2. Higher confidence score
-    3. Longer span (more specific match)
+    1. MasakhaNER wins for PERSON_NAME (over both local_context and Presidio)
+    2. local_context wins for its preferred free-text types (names/places,
+       when MasakhaNER isn't the source on either side of the overlap)
+    3. Presidio wins for its preferred fixed-format ID types
+    4. Higher confidence score
+    5. Longer span (more specific match)
+
+    NOTE: this returns ONE of the two spans as-is; it does not widen a
+    span to cover a partial overlap (e.g. if one detector tags only
+    "Oladele" and another tags the full "Oladele Peter", the shorter
+    span's extra/missing characters aren't merged in). Worth revisiting
+    if partial-overlap cases show up in testing - for now, favoring the
+    higher-priority source's exact span is the simpler and safer default.
     """
     a_type, b_type = a["entity_type"], b["entity_type"]
+
+    if a["source"] == "masakhaner" and a_type in MASAKHANER_PREFERRED_TYPES:
+        return a
+    if b["source"] == "masakhaner" and b_type in MASAKHANER_PREFERRED_TYPES:
+        return b
 
     if a["source"] == "local_context" and a_type in CONTEXT_PREFERRED_TYPES:
         return a
@@ -156,10 +200,13 @@ def _merge_overlaps(detections: list[dict]) -> list[dict]:
 def detect_all(text: str, language: str = "en") -> list[dict]:
     """
     Runs the full detection pipeline (Presidio + Nigerian patterns +
-    local gazetteer/heuristic context detection) and returns a single
-    merged, deduplicated list of entities sorted by position in the text.
+    local gazetteer/heuristic context detection + MasakhaNER PERSON
+    detection) and returns a single merged, deduplicated list of
+    entities sorted by position in the text.
 
-    No external API calls anywhere in this pipeline.
+    No external API calls anywhere in this pipeline (MasakhaNER's model
+    weights are downloaded once from Hugging Face on first run and
+    cached locally after that - no per-request network call).
 
     Output shape (ready for redactors):
         {
@@ -168,7 +215,7 @@ def detect_all(text: str, language: str = "en") -> list[dict]:
             "start": N,
             "end": N,
             "score": 0.0-1.0,
-            "source": "presidio" | "local_context",
+            "source": "presidio" | "local_context" | "masakhaner",
         }
     """
     if not text or not text.strip():
@@ -177,8 +224,9 @@ def detect_all(text: str, language: str = "en") -> list[dict]:
     presidio_results = detect_with_presidio(text, language=language)
     context_raw = detect_local_context(text)
     context_results = _normalize_local_context_results(context_raw)
+    masakhaner_results = detect_with_masakhaner(text)
 
-    all_detections = presidio_results + context_results
+    all_detections = presidio_results + context_results + masakhaner_results
     merged = _merge_overlaps(all_detections)
 
     return merged
@@ -193,7 +241,8 @@ if __name__ == "__main__":
         "Applicant: Chukwuemeka Okonkwo, NIN: 12345678901, "
         "BVN: 22334455667, Phone: 08012345678, "
         "Passport: A01234567, Plate: LAG 123AB. "
-        "He resides in Nnewi North, Anambra State, and is of Igbo ethnicity."
+        "He resides in Nnewi North, Anambra State, and is of Igbo ethnicity. "
+        "Employee record on file for Oladele Peter, submitted last month."
     )
 
     print(f"Testing merger.py against sample text:\n{test_text}\n")
@@ -201,7 +250,7 @@ if __name__ == "__main__":
     results = detect_all(test_text)
 
     if not results:
-        print("No entities detected — check that both detectors are working.")
+        print("No entities detected — check that all three detectors are working.")
     else:
         for r in results:
             print(
