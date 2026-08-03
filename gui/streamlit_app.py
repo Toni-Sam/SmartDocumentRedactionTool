@@ -77,6 +77,45 @@ if "redacted_filename" not in st.session_state:
     st.session_state.redacted_filename = None
 if "redaction_summary" not in st.session_state:
     st.session_state.redaction_summary = None
+if "approval_revision" not in st.session_state:
+    st.session_state.approval_revision = 0
+
+
+def friendly_error_message(exc: Exception, ext: str) -> str:
+    """
+    Maps common low-level exceptions (corrupted files, password-protected
+    PDFs, bad zip structures in DOCX) to a plain-language message. Falls
+    back to a generic message for anything unrecognized - the raw
+    exception is still shown separately in a collapsed "technical
+    details" expander for debugging, it's just not the headline message.
+    """
+    msg = str(exc).lower()
+
+    password_signals = ("password", "encrypt", "decrypt", "needs_pass")
+    corruption_signals = (
+        "bad zip", "not a zip file", "packagenotfounderror", "damaged",
+        "cannot open", "file data error", "invalid pdf", "syntax error",
+    )
+
+    if any(sig in msg for sig in password_signals):
+        return (
+            "This file appears to be password-protected. Please remove "
+            "the password (or provide an unprotected copy) and upload again — "
+            "this tool cannot open encrypted documents."
+        )
+
+    if any(sig in msg for sig in corruption_signals):
+        return (
+            f"This {ext.upper().lstrip('.')} file appears to be corrupted or "
+            "isn't a valid document of that type. Try re-saving or "
+            "re-exporting it, then upload again."
+        )
+
+    return (
+        "Something went wrong while processing this file, and it doesn't "
+        "match a known cause (password protection or corruption). See "
+        "'Technical details' below, or try a different file."
+    )
 
 
 def reset_session():
@@ -86,6 +125,7 @@ def reset_session():
     st.session_state.redacted_bytes = None
     st.session_state.redacted_filename = None
     st.session_state.redaction_summary = None
+    st.session_state.approval_revision = 0
 
 
 # ---------------------------------------------------------------------------
@@ -149,11 +189,17 @@ if not st.session_state.detection_done:
         tmp.write(uploaded_file.getbuffer())
         tmp_path = tmp.name
 
-    with st.spinner(
-        "Running detection — Presidio, local context heuristics, and "
-        "MasakhaNER (first load can take a while)…"
-    ):
-        session = detect_document(tmp_path)
+    try:
+        with st.spinner(
+            "Running detection — Presidio, local context heuristics, and "
+            "MasakhaNER (first load can take a while)…"
+        ):
+            session = detect_document(tmp_path)
+    except Exception as exc:
+        st.error(friendly_error_message(exc, ext))
+        with st.expander("Technical details"):
+            st.exception(exc)
+        st.stop()
 
     st.session_state.session = session
     st.session_state.detection_done = True
@@ -176,10 +222,12 @@ col_a, col_b, col_c = st.columns([1, 1, 4])
 with col_a:
     if st.button("✅ Approve all"):
         set_all_approved(session, True)
+        st.session_state.approval_revision += 1
         st.rerun()
 with col_b:
     if st.button("❌ Reject all"):
         set_all_approved(session, False)
+        st.session_state.approval_revision += 1
         st.rerun()
 
 st.caption(
@@ -217,7 +265,9 @@ for entity in filtered:
 
     row = st.columns([0.5, 2, 1.5, 1, 1])
     approved = row[0].checkbox(
-        "", value=entity.get("approved", True), key=f"approve_{entity_id}"
+        "",
+        value=entity.get("approved", True),
+        key=f"approve_{entity_id}_{st.session_state.approval_revision}",
     )
     if approved != entity.get("approved", True):
         set_approval(session, entity_id, approved)
@@ -242,21 +292,48 @@ st.divider()
 st.subheader("Export")
 
 if st.button("🔒 Apply redactions", type="primary"):
-    with st.spinner("Applying redactions…"):
-        out_name = f"redacted_{uploaded_file.name}"
-        out_path = str(Path(tempfile.gettempdir()) / out_name)
-        summary = apply_redactions(session, out_path)
+    out_name = f"redacted_{uploaded_file.name}"
+    out_path = str(Path(tempfile.gettempdir()) / out_name)
+
+    try:
+        with st.spinner("Applying redactions…"):
+            summary = apply_redactions(session, out_path)
 
         with open(out_path, "rb") as f:
             st.session_state.redacted_bytes = f.read()
         st.session_state.redacted_filename = out_name
         st.session_state.redaction_summary = summary
 
-    st.success("Redaction complete.")
+        st.success("Redaction complete.")
+    except Exception as exc:
+        st.error(friendly_error_message(exc, ext))
+        with st.expander("Technical details"):
+            st.exception(exc)
 
 if st.session_state.get("redaction_summary"):
-    with st.expander("Redaction summary", expanded=True):
-        st.json(st.session_state.redaction_summary)
+    summary = st.session_state.redaction_summary
+    rejected_count = sum(1 for e in entities if not e.get("approved", True))
+
+    # DOCX and PDF redactors return differently-named keys for the same
+    # concepts (entities_matched vs entities_redacted, paragraphs_redacted
+    # vs pages) rather than a shared schema - normalize here.
+    matched_count = summary.get("entities_matched", summary.get("entities_redacted"))
+    unit_count = summary.get("paragraphs_redacted", summary.get("pages"))
+    unit_label = "Paragraphs redacted" if "paragraphs_redacted" in summary else "Pages"
+
+    st.subheader("Redaction summary")
+    metric_cols = st.columns(3)
+    if matched_count is not None:
+        metric_cols[0].metric("Entities matched", matched_count)
+    metric_cols[1].metric("Rejected (left un-redacted)", rejected_count)
+    if unit_count is not None:
+        metric_cols[2].metric(unit_label, unit_count)
+
+    known_keys = {"entities_matched", "entities_redacted", "paragraphs_redacted", "pages", "output"}
+    extra = {k: v for k, v in summary.items() if k not in known_keys}
+    if extra:
+        with st.expander("Additional details"):
+            st.json(extra)
 
 if st.session_state.redacted_bytes is not None:
     st.download_button(
