@@ -132,7 +132,7 @@ def reset_session():
 # Sidebar — upload & document info
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.title("🛡️ Redaction Tool")
+    st.title("Redaction Tool")
     st.caption("Nigerian PII detection & redaction")
 
     uploaded_file = st.file_uploader(
@@ -220,12 +220,12 @@ st.subheader(f"Detected entities ({len(entities)})")
 
 col_a, col_b, col_c = st.columns([1, 1, 4])
 with col_a:
-    if st.button("✅ Approve all"):
+    if st.button("Approve all"):
         set_all_approved(session, True)
         st.session_state.approval_revision += 1
         st.rerun()
 with col_b:
-    if st.button("❌ Reject all"):
+    if st.button("Reject all"):
         set_all_approved(session, False)
         st.session_state.approval_revision += 1
         st.rerun()
@@ -291,7 +291,7 @@ st.divider()
 # ---------------------------------------------------------------------------
 st.subheader("Export")
 
-if st.button("🔒 Apply redactions", type="primary"):
+if st.button("Apply redactions", type="primary"):
     out_name = f"redacted_{uploaded_file.name}"
     out_path = str(Path(tempfile.gettempdir()) / out_name)
 
@@ -337,7 +337,7 @@ if st.session_state.get("redaction_summary"):
 
 if st.session_state.redacted_bytes is not None:
     st.download_button(
-        label=f"⬇️ Download {st.session_state.redacted_filename}",
+        label=f"Download {st.session_state.redacted_filename}",
         data=st.session_state.redacted_bytes,
         file_name=st.session_state.redacted_filename,
         mime=(

@@ -67,7 +67,16 @@ from app.redactors.docx_redactor import redact_docx
 from app.redactors.pdf_redactor import redact_pdf_from_detections
 
 
-SUPPORTED_EXTENSIONS = {".docx": "docx", ".pdf": "pdf"}
+SUPPORTED_EXTENSIONS = {
+    ".docx": "docx",
+    ".pdf": "pdf",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".png": "image",
+    ".tiff": "image",
+    ".tif": "image",
+    ".bmp": "image",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +150,7 @@ def detect_document(input_path: str) -> DetectionSession:
                 e["id"] = next(ids)
                 e["approved"] = True
                 e["page_num"] = block.page_num  # 0-indexed, matches PDFPageBlock
+                e["page_type"] = block.page_type  # "text" | "scanned"
                 flat_entities.append(e)
 
         return DetectionSession(
@@ -148,6 +158,35 @@ def detect_document(input_path: str) -> DetectionSession:
             file_type="pdf",
             entities=flat_entities,
             _page_results=page_results,
+        )
+
+    if file_type == "image":
+        # Standalone image file (.jpg/.png/.tiff/.bmp) - not a PDF, so there's
+        # no page loop or PDFPageBlock.page_num concept. Routed straight to
+        # scanned_pdf_parser.py's image-input path.
+        try:
+            from app.parsers.scanned_pdf_parser import extract_image_block
+        except ImportError as exc:
+            raise NotImplementedError(
+                f"{input_path!r} is an image file, but "
+                f"app/parsers/scanned_pdf_parser.py doesn't exist yet - OCR "
+                f"support hasn't been built. This file cannot be parsed until it is."
+            ) from exc
+
+        block, block_entities = extract_image_block(input_path, dpi=300)
+        entities = []
+        for e in block_entities:
+            e["id"] = next(ids)
+            e["approved"] = True
+            e["page_num"] = 0
+            e["page_type"] = "scanned"
+            entities.append(e)
+
+        return DetectionSession(
+            input_path=input_path,
+            file_type="image",
+            entities=entities,
+            _page_results=[(block, entities)],
         )
 
     raise AssertionError(f"unreachable: unhandled file_type {file_type!r}")
@@ -207,6 +246,22 @@ def apply_redactions(session: DetectionSession, output_path: str, **redactor_kwa
         ]
         return redact_pdf_from_detections(
             session.input_path, output_path, filtered_page_results, **redactor_kwargs
+        )
+
+    if session.file_type == "image":
+        try:
+            from app.redactors.scanned_pdf_redactor import redact_image_from_detections
+        except ImportError as exc:
+            raise NotImplementedError(
+                f"{session.input_path!r} is an image file, but "
+                f"app/redactors/scanned_pdf_redactor.py doesn't exist yet - "
+                f"OCR redaction hasn't been built. Cannot apply redactions until it is."
+            ) from exc
+
+        block, block_entities = session._page_results[0]
+        approved = [e for e in block_entities if e.get("approved", True)]
+        return redact_image_from_detections(
+            session.input_path, output_path, block, approved, **redactor_kwargs
         )
 
     raise AssertionError(f"unreachable: unhandled file_type {session.file_type!r}")
