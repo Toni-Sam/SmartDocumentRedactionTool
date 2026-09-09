@@ -108,10 +108,46 @@ def _normalize_local_context_results(context_results: list[dict]) -> list[dict]:
     return normalized
 
 
-# masakhaner_detector.py already returns the common shape directly
-# ({"text", "entity_type", "start", "end", "score", "source": "masakhaner"}),
-# so no normalization step is needed for it - unlike local_context_detector
-# above, which uses "type" instead of "entity_type" and has no "source" key.
+# Maps MasakhaNER's raw label(s) onto this pipeline's canonical entity
+# types. MasakhaNER emits "PERSON" (a Hugging Face NER label), not this
+# app's "PERSON_NAME" - without this mapping, _pick_winner()'s priority
+# checks against MASAKHANER_PREFERRED_TYPES / CONTEXT_PREFERRED_TYPES
+# never match, since they compare entity_type strings directly. That
+# silently breaks priority resolution AND is the root cause of duplicate
+# PERSON detections surviving into the merged output: two spans that
+# really are the same entity (one from MasakhaNER, one from
+# local_context) go through _spans_overlap() fine (overlap is purely
+# start/end based), but a would-be winner check keyed on entity_type
+# never recognizes them as competing for the same slot in the first
+# place if downstream code branches on type before calling _pick_winner -
+# and more importantly, once normalized, genuinely overlapping spans of
+# the same canonical type are far more likely to be caught by
+# _spans_overlap() and correctly deduplicated to one winner instead of
+# both surviving as separate "different-type" entities.
+#
+# "PER" is included defensively in case the underlying Hugging Face
+# pipeline's aggregation strategy is ever changed to return the shorter
+# CoNLL-style tag instead of the expanded "PERSON" label.
+MASAKHANER_LABEL_MAP = {
+    "PERSON": "PERSON_NAME",
+    "PER": "PERSON_NAME",
+}
+
+
+def _normalize_masakhaner_results(masakhaner_results: list[dict]) -> list[dict]:
+    """
+    Applies MASAKHANER_LABEL_MAP to each result's entity_type. Any label
+    not in the map passes through unchanged (defensive default, not a
+    silent drop) - so if masakhaner_detector.py is ever updated to emit
+    the correct canonical label directly, this becomes a no-op rather
+    than something that needs to be un-done.
+    """
+    normalized = []
+    for r in masakhaner_results:
+        r = dict(r)  # don't mutate the detector's own return value
+        r["entity_type"] = MASAKHANER_LABEL_MAP.get(r["entity_type"], r["entity_type"])
+        normalized.append(r)
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +260,8 @@ def detect_all(text: str, language: str = "en") -> list[dict]:
     presidio_results = detect_with_presidio(text, language=language)
     context_raw = detect_local_context(text)
     context_results = _normalize_local_context_results(context_raw)
-    masakhaner_results = detect_with_masakhaner(text)
+    masakhaner_raw = detect_with_masakhaner(text)
+    masakhaner_results = _normalize_masakhaner_results(masakhaner_raw)
 
     all_detections = presidio_results + context_results + masakhaner_results
     merged = _merge_overlaps(all_detections)

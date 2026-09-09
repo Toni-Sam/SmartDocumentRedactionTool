@@ -57,8 +57,15 @@ FIELD_LABELS = [
 _LABEL_PATTERN = "|".join(re.escape(l) for l in FIELD_LABELS)
 
 # A capitalized word sequence (1-4 words), used as the candidate shape
-# for a person name once a title or label context anchors it.
-_NAME_SHAPE = r"[A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+){0,3}"
+# for a person name once a title or label context anchors it. The
+# between-word separator is deliberately [ \t]+ (same line only), not
+# \s+ - a real name doesn't span a line break on a form, but allowing \s+
+# here meant a name captured after a label could keep matching straight
+# across the newline into the START OF THE NEXT FIELD'S LABEL (e.g.
+# "Comfort Adewale\nHome Address" would be captured as one name). Same
+# underlying issue as the colon-gap fix above, just on the other side of
+# the captured name.
+_NAME_SHAPE = r"[A-Z][a-zA-Z'\-]+(?:[ \t]+[A-Z][a-zA-Z'\-]+){0,3}"
 
 # Title/honorific immediately before a name: "Mr. Chukwuemeka Okonkwo"
 _TITLE_NAME_PATTERN = re.compile(
@@ -66,8 +73,17 @@ _TITLE_NAME_PATTERN = re.compile(
 )
 
 # Field label followed by a colon then a name: "Applicant: Chukwuemeka Okonkwo"
+# The gap between colon and name is deliberately restricted to SAME-LINE
+# whitespace ([ \t]*, not \s*) - not newlines. Using \s* here originally
+# meant a BLANK field (label with nothing filled in, common on scanned/
+# handwritten forms) would let the pattern skip straight across the
+# newline and capture the NEXT line's own field label as if it were the
+# answer to this one - e.g. "Mother's Name:\nHome Address:" would
+# misattribute "Home Address" as a PERSON_NAME. Restricting to same-line
+# whitespace means a blank field simply produces no match at all, which
+# is the correct behavior - no name was actually written there.
 _LABEL_NAME_PATTERN = re.compile(
-    rf"\b(?:{_LABEL_PATTERN})\s*:\s*({_NAME_SHAPE})", re.IGNORECASE
+    rf"\b(?:{_LABEL_PATTERN})[ \t]*:[ \t]*({_NAME_SHAPE})", re.IGNORECASE
 )
 
 # Not exhaustive - common Nigerian given/family name fragments used to
@@ -123,6 +139,31 @@ def _looks_like_stopword_phrase(candidate: str) -> bool:
     return first_word in STOP
 
 
+# Defense-in-depth against form/label text being misclassified as a
+# name - e.g. "Home Address", "Local Government", "Public Seal". This
+# catches cases beyond the specific blank-field-newline-skip bug fixed
+# above (e.g. two field labels sitting adjacent on the same OCR line due
+# to layout/reading-order quirks). Deliberately a closed, small
+# vocabulary of known form/certificate words, not a general dictionary -
+# a real name is extremely unlikely to consist ENTIRELY of words drawn
+# from this list.
+_ADMIN_VOCABULARY = {
+    w.lower() for w in FIELD_LABELS
+} | {
+    "home", "address", "local", "government", "area", "certificate",
+    "origin", "seal", "public", "father", "mother", "state", "date",
+    "signature", "hand", "year", "district", "council", "ward",
+}
+
+
+def _is_administrative_phrase(candidate: str) -> bool:
+    """True if every word in `candidate` (lowercased, possessive-stripped)
+    is drawn from _ADMIN_VOCABULARY - i.e. it looks like form boilerplate,
+    not a person's name."""
+    words = [w.lower().rstrip("'s").strip("'-") for w in candidate.split()]
+    return bool(words) and all(w in _ADMIN_VOCABULARY for w in words)
+
+
 def find_person_names(text: str) -> list[dict]:
     """
     Returns [{"text", "start", "end", "score"}] for candidate person
@@ -139,7 +180,7 @@ def find_person_names(text: str) -> list[dict]:
     ):
         for m in pattern.finditer(text):
             name = m.group(1)
-            if _looks_like_stopword_phrase(name):
+            if _looks_like_stopword_phrase(name) or _is_administrative_phrase(name):
                 continue
             start, end = m.start(1), m.end(1)
             score = base_score + 0.15 * _fragment_score(name)
@@ -155,7 +196,7 @@ def find_person_names(text: str) -> list[dict]:
         if span in candidates:
             continue
         name = m.group(0)
-        if _looks_like_stopword_phrase(name) or len(name.split()) < 2:
+        if _looks_like_stopword_phrase(name) or _is_administrative_phrase(name) or len(name.split()) < 2:
             continue
         frag_score = _fragment_score(name)
         if frag_score >= 0.5:

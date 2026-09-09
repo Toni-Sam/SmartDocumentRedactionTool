@@ -34,13 +34,31 @@ are the SAME object references as the ones in `entities` - not copies -
 so flipping `entity["approved"]` from a review UI is visible in both
 places automatically, no separate sync step required.
 
+PAGE-LEVEL REVIEW FLAGS
+------------------------
+flagged_for_ocr_review (set in pdf_parser.py's detect_pii_in_pdf()) is a
+PAGE-level signal - "this page classified as text yielded almost nothing,
+it might actually be an unrecognized scan" - not an entity-level one. It
+lives on PDFPageBlock, which only survives in the private _page_results
+list. Without pulling it out, a GUI has no way to show a reviewer "page 4
+might have been missed" - the flag would be invisible outside this module.
+
+flagged_pages surfaces that: a flat list of page_nums (0-indexed, matching
+PDFPageBlock.page_num) where flagged_for_ocr_review is True, built once at
+detect time. Deliberately kept separate from `entities` rather than
+stamped onto every entity dict for that page - the flag describes the
+page as a whole, not any individual entity, so a page-level banner in the
+GUI is the correct UX, not a per-row annotation. Empty list for docx and
+for PDFs where nothing was flagged.
+
 GUI NOTE
 --------
 DetectionSession is meant to be held in memory across a request/session
 (e.g. Streamlit's st.session_state), not serialized to JSON. session.entities
 alone IS JSON-safe if you ever need to export/log a review manifest (it's
 just text/ints/floats/bools) - it's only _page_results (PDFPageBlock /
-fitz.Rect) that can't leave memory.
+fitz.Rect) that can't leave memory. flagged_pages is also JSON-safe (a
+plain list of ints).
 
 USAGE
 -----
@@ -86,11 +104,16 @@ SUPPORTED_EXTENSIONS = {
 @dataclass
 class DetectionSession:
     input_path: str
-    file_type: str  # "docx" | "pdf"
+    file_type: str  # "docx" | "pdf" | "image"
     entities: list  # flat, review-ready list of entity dicts (see module docstring)
     _page_results: Optional[list] = field(default=None, repr=False)
     # PDF-only: list of (PDFPageBlock, entities) tuples with real fitz.Rect
     # data. None for docx, since redact_docx() re-parses the file itself.
+    flagged_pages: list = field(default_factory=list)
+    # Page numbers (0-indexed) where PDFPageBlock.flagged_for_ocr_review is
+    # True - a page classified "text" that yielded thin content and zero
+    # entities, possibly an unrecognized scan. Page-level, not entity-level
+    # (see module docstring). Always empty for docx.
 
 
 def _next_id_counter():
@@ -136,6 +159,7 @@ def detect_document(input_path: str) -> DetectionSession:
             file_type="docx",
             entities=entities,
             _page_results=None,
+            flagged_pages=[],
         )
 
     if file_type == "pdf":
@@ -153,11 +177,20 @@ def detect_document(input_path: str) -> DetectionSession:
                 e["page_type"] = block.page_type  # "text" | "scanned"
                 flat_entities.append(e)
 
+        # Page-level review signal, pulled out of PDFPageBlock since
+        # _page_results is private plumbing the GUI shouldn't reach into
+        # directly (see module docstring: PAGE-LEVEL REVIEW FLAGS).
+        flagged_pages = [
+            block.page_num for block, _ in page_results
+            if block.flagged_for_ocr_review
+        ]
+
         return DetectionSession(
             input_path=input_path,
             file_type="pdf",
             entities=flat_entities,
             _page_results=page_results,
+            flagged_pages=flagged_pages,
         )
 
     if file_type == "image":
@@ -182,11 +215,15 @@ def detect_document(input_path: str) -> DetectionSession:
             e["page_type"] = "scanned"
             entities.append(e)
 
+        # Standalone images have no PyMuPDF page-classification step (no
+        # "text" vs "scanned" routing decision to second-guess - it's
+        # always scanned), so flagged_for_ocr_review doesn't apply here.
         return DetectionSession(
             input_path=input_path,
             file_type="image",
             entities=entities,
             _page_results=[(block, entities)],
+            flagged_pages=[],
         )
 
     raise AssertionError(f"unreachable: unhandled file_type {file_type!r}")
@@ -297,6 +334,11 @@ if __name__ == "__main__":
     session = detect_document(input_path)
 
     print(f"File type: {session.file_type}")
+
+    if session.flagged_pages:
+        print(f"⚠ Pages flagged for OCR review (thin text, zero entities - "
+              f"possible missed scan): {session.flagged_pages}")
+
     print(f"Found {len(session.entities)} entities for review:\n")
     for e in get_entities_for_review(session):
         page_info = f" page={e['page_num']}" if session.file_type == "pdf" else ""

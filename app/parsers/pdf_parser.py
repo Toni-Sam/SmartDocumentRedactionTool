@@ -198,6 +198,56 @@ def parse_pdf(pdf_path: str) -> List[PDFPageBlock]:
     return blocks
 
 
+def _merge_adjacent_address_fragments(block_text: str, entities: list) -> list:
+    """
+    Stitches together consecutive ADDRESS-type entities that are only
+    separated by whitespace/newline in the reconstructed page text.
+
+    WHY THIS HAS TO LIVE HERE, NOT IN merger.py
+    -----------------------------------------------
+    detect_pii_in_pdf() runs detect_all() separately per structural
+    block segment (see the loop below) - this is the NER-context fix
+    from the module docstring. That means a single real-world address
+    spanning two PyMuPDF blocks (a common PDF layout artifact: form
+    fields, table cells, wrapped lines) gets detected as two independent
+    ADDRESS entities in two separate detect_all() calls. merger.py has
+    no visibility across that boundary - it only ever sees one segment's
+    text per call, so it can't merge what it never saw together. DOCX
+    doesn't hit this: docx_parser.py detects per-paragraph, and a real
+    address normally lives inside one paragraph, so no fragmentation
+    happens there in the first place.
+
+    Deliberately conservative: only merges ADDRESS with ADDRESS, and only
+    across a gap that is pure whitespace (nothing else). Other entity
+    types are left untouched, since fragmentation was only observed for
+    addresses.
+    """
+    if not entities:
+        return entities
+
+    merged = [dict(entities[0])]
+    for current in entities[1:]:
+        last = merged[-1]
+        gap = block_text[last["end"]:current["start"]]
+
+        if (
+            last["entity_type"] == "ADDRESS"
+            and current["entity_type"] == "ADDRESS"
+            and gap.strip() == ""
+        ):
+            last["end"] = current["end"]
+            last["text"] = block_text[last["start"]:last["end"]]
+            last["score"] = max(last["score"], current["score"])
+            # last["source"] deliberately kept as the first fragment's
+            # source - the stitched entity doesn't have one single
+            # "true" source, and preserving the first is simpler and
+            # more predictable than inventing a "merged" source value.
+        else:
+            merged.append(dict(current))
+
+    return merged
+
+
 def detect_pii_in_pdf(pdf_path: str):
     """
     Runs the full detection pipeline against each page of a PDF, one
@@ -231,6 +281,7 @@ def detect_pii_in_pdf(pdf_path: str):
                 entities.append(shifted)
 
         entities.sort(key=lambda e: e["start"])
+        entities = _merge_adjacent_address_fragments(block.text, entities)
 
         if block.page_type == "scanned":
             # Resolve each entity's char span back to the OCR word(s) it
