@@ -56,7 +56,25 @@ st.set_page_config(
     layout="wide",
 )
 
-SUPPORTED_EXTENSIONS = {".docx", ".pdf"}  # xlsx/txt/csv/scanned-pdf pending
+SUPPORTED_EXTENSIONS = {
+    ".docx", ".pdf",
+    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp",
+}  # xlsx/txt/csv pending
+
+# Maps an uploaded file's extension to the MIME type used for the download
+# button, and to the extension used to persist the redacted output (image
+# outputs preserve the original extension - a .jpg upload produces a .jpg
+# download, not a normalized format).
+MIME_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    ".bmp": "image/bmp",
+}
 
 # ---------------------------------------------------------------------------
 # Session state initialization
@@ -137,9 +155,9 @@ with st.sidebar:
 
     uploaded_file = st.file_uploader(
         "Upload a document",
-        type=["docx", "pdf"],
-        help="Text-based PDF and DOCX are supported today. "
-        "Scanned PDFs/images (OCR), XLSX, TXT/CSV, and RTF are not yet implemented.",
+        type=["docx", "pdf", "jpg", "jpeg", "png", "tiff", "tif", "bmp"],
+        help="Text-based PDF, DOCX, and standalone images (JPG/PNG/TIFF/BMP) "
+        "are supported today. XLSX, TXT/CSV, and RTF are not yet implemented.",
     )
 
     if uploaded_file is not None:
@@ -172,7 +190,7 @@ with st.sidebar:
 st.header("Smart Document Redaction Tool")
 
 if uploaded_file is None:
-    st.info("Upload a DOCX or text-based PDF from the sidebar to get started.")
+    st.info("Upload a DOCX, text-based PDF, or image (JPG/PNG/TIFF/BMP) from the sidebar to get started.")
     st.stop()
 
 ext = Path(uploaded_file.name).suffix.lower()
@@ -340,9 +358,5 @@ if st.session_state.redacted_bytes is not None:
         label=f"Download {st.session_state.redacted_filename}",
         data=st.session_state.redacted_bytes,
         file_name=st.session_state.redacted_filename,
-        mime=(
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            if ext == ".docx"
-            else "application/pdf"
-        ),
+        mime=MIME_TYPES.get(ext, "application/octet-stream"),
     )
