@@ -45,6 +45,31 @@ from app.detectors.masakhaner_detector import detect_with_masakhaner
 #      entities (IDs, numbers) since it's deterministic and pattern-based.
 #
 #   4. Fallback: higher confidence score, then longer span.
+#
+# SPAN WIDENING ON SAME-TYPE OVERLAP
+# ------------------------------------
+# CONFIRMED BUG (found via app/debug/pipeline_dump.py against the typed-
+# scan test document, after the PSM 6 OCR fix): MasakhaNER's wordpiece
+# aggregation can clip a span by a character or two at a boundary - e.g.
+# it returned "Chiamaka Ngozi Ez" (missing the final "e") while
+# local_context_detector, overlapping the same name, correctly returned
+# the full "Chiamaka Ngozi Eze". Under pure source-priority, MasakhaNER
+# won unconditionally (per MASAKHANER_PREFERRED_TYPES) and the merged
+# result kept the truncated span - meaning the final "e" would have been
+# left un-redacted in the output PDF.
+#
+# This is exactly the partial-overlap case flagged as a known risk below
+# (previously: "this returns ONE of the two spans as-is; it does not
+# widen a span to cover a partial overlap... worth revisiting if
+# partial-overlap cases show up in testing"). One now has, so it's
+# implemented: whenever two overlapping detections share the same
+# entity_type, the winner's span is widened to the UNION of both spans'
+# boundaries before being returned. Source-priority still decides whose
+# "source"/score attribution survives; only the character span is
+# widened, and only ever wider, never narrower. Overlaps between
+# DIFFERENT entity_types are unaffected - widening across type boundaries
+# isn't the fix for what was actually seen here and risks conflating two
+# genuinely different entities.
 
 MASAKHANER_PREFERRED_TYPES = {
     "PERSON_NAME",
@@ -161,7 +186,7 @@ def _spans_overlap(a: dict, b: dict) -> bool:
     return a["start"] < b["end"] and b["start"] < a["end"]
 
 
-def _pick_winner(a: dict, b: dict) -> dict:
+def _pick_winner(a: dict, b: dict, text: str) -> dict:
     """
     Given two overlapping detections, decide which one to keep.
 
@@ -173,42 +198,57 @@ def _pick_winner(a: dict, b: dict) -> dict:
     4. Higher confidence score
     5. Longer span (more specific match)
 
-    NOTE: this returns ONE of the two spans as-is; it does not widen a
-    span to cover a partial overlap (e.g. if one detector tags only
-    "Oladele" and another tags the full "Oladele Peter", the shorter
-    span's extra/missing characters aren't merged in). Worth revisiting
-    if partial-overlap cases show up in testing - for now, favoring the
-    higher-priority source's exact span is the simpler and safer default.
+    SPAN WIDENING: if both detections share the same entity_type, the
+    winner's span is widened to the union of both spans' boundaries
+    before being returned (start=min, end=max), and "text" is re-sliced
+    from `text` at that widened range. This fixes the confirmed
+    truncated-span bug documented above (MasakhaNER clipping the final
+    character of a name that local_context correctly found in full) -
+    the higher-priority source still wins for "source"/score
+    attribution, but never at the cost of narrowing below what a
+    lower-priority detector correctly matched. Overlaps between
+    different entity_types are returned as-is, unwidened - see the note
+    above the priority-rule constants for why.
     """
     a_type, b_type = a["entity_type"], b["entity_type"]
 
     if a["source"] == "masakhaner" and a_type in MASAKHANER_PREFERRED_TYPES:
-        return a
-    if b["source"] == "masakhaner" and b_type in MASAKHANER_PREFERRED_TYPES:
-        return b
+        winner = a
+    elif b["source"] == "masakhaner" and b_type in MASAKHANER_PREFERRED_TYPES:
+        winner = b
+    elif a["source"] == "local_context" and a_type in CONTEXT_PREFERRED_TYPES:
+        winner = a
+    elif b["source"] == "local_context" and b_type in CONTEXT_PREFERRED_TYPES:
+        winner = b
+    elif a["source"] == "presidio" and a_type in PATTERN_PREFERRED_TYPES:
+        winner = a
+    elif b["source"] == "presidio" and b_type in PATTERN_PREFERRED_TYPES:
+        winner = b
+    elif a["score"] != b["score"]:
+        winner = a if a["score"] > b["score"] else b
+    else:
+        a_len = a["end"] - a["start"]
+        b_len = b["end"] - b["start"]
+        winner = a if a_len >= b_len else b
 
-    if a["source"] == "local_context" and a_type in CONTEXT_PREFERRED_TYPES:
-        return a
-    if b["source"] == "local_context" and b_type in CONTEXT_PREFERRED_TYPES:
-        return b
+    if a_type == b_type:
+        widened_start = min(a["start"], b["start"])
+        widened_end = max(a["end"], b["end"])
+        if widened_start != winner["start"] or widened_end != winner["end"]:
+            winner = dict(winner)
+            winner["start"] = widened_start
+            winner["end"] = widened_end
+            winner["text"] = text[widened_start:widened_end]
 
-    if a["source"] == "presidio" and a_type in PATTERN_PREFERRED_TYPES:
-        return a
-    if b["source"] == "presidio" and b_type in PATTERN_PREFERRED_TYPES:
-        return b
-
-    if a["score"] != b["score"]:
-        return a if a["score"] > b["score"] else b
-
-    a_len = a["end"] - a["start"]
-    b_len = b["end"] - b["start"]
-    return a if a_len >= b_len else b
+    return winner
 
 
-def _merge_overlaps(detections: list[dict]) -> list[dict]:
+def _merge_overlaps(detections: list[dict], text: str) -> list[dict]:
     """
     Sorts detections by start position, then walks through resolving
-    any overlapping spans down to a single winner each.
+    any overlapping spans down to a single winner each. `text` is the
+    original text detections were found in - needed by _pick_winner()
+    to re-slice a widened span's text.
     """
     if not detections:
         return []
@@ -221,7 +261,7 @@ def _merge_overlaps(detections: list[dict]) -> list[dict]:
         last = merged[-1]
 
         if _spans_overlap(last, current):
-            winner = _pick_winner(last, current)
+            winner = _pick_winner(last, current, text)
             merged[-1] = winner
         else:
             merged.append(current)
@@ -264,7 +304,7 @@ def detect_all(text: str, language: str = "en") -> list[dict]:
     masakhaner_results = _normalize_masakhaner_results(masakhaner_raw)
 
     all_detections = presidio_results + context_results + masakhaner_results
-    merged = _merge_overlaps(all_detections)
+    merged = _merge_overlaps(all_detections, text)
 
     return merged
 
@@ -294,3 +334,26 @@ if __name__ == "__main__":
                 f"[{r['source']}] {r['entity_type']}: '{r['text']}' "
                 f"(pos {r['start']}-{r['end']}, score {r['score']})"
             )
+
+    # Regression test for the confirmed span-truncation bug: simulates
+    # MasakhaNER returning a name span that's one character short of
+    # local_context's correct, complete span (as actually observed
+    # against the typed-scan test document - MasakhaNER returned
+    # "Chiamaka Ngozi Ez" while local_context returned the correct
+    # "Chiamaka Ngozi Eze"). Expect the merged result to keep the FULL,
+    # untruncated span even though MasakhaNER wins on source priority.
+    print("\n--- Span-widening regression check (expect full untruncated name) ---")
+    truncation_text = "Full Name: Chiamaka Ngozi Eze"
+    truncated_masakhaner = [{
+        "text": "Chiamaka Ngozi Ez", "entity_type": "PERSON_NAME",
+        "start": 11, "end": 28, "score": 0.97, "source": "masakhaner",
+    }]
+    correct_local_context = [{
+        "text": "Chiamaka Ngozi Eze", "entity_type": "PERSON_NAME",
+        "start": 11, "end": 29, "score": 0.85, "source": "local_context",
+    }]
+    widened = _merge_overlaps(truncated_masakhaner + correct_local_context, truncation_text)
+    if len(widened) == 1 and widened[0]["text"] == "Chiamaka Ngozi Eze" and widened[0]["end"] == 29:
+        print(f"OK: merged span is full and untruncated: {widened[0]}")
+    else:
+        print(f"FAIL: expected full untruncated span, got: {widened}")

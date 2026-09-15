@@ -46,7 +46,7 @@ from app.detectors.nigeria_gazetteer import find_lgas, find_states, find_ethnic_
 TITLES = [
     "Mr", "Mrs", "Miss", "Ms", "Dr", "Engr", "Barr", "Prof", "Chief",
     "Alhaji", "Alhaja", "Prince", "Princess", "Otunba", "Hon", "Rev",
-    "Pastor", "Comrade",
+    "Pastor", "Comrade", "Reverend", 
 ]
 _TITLE_PATTERN = "|".join(re.escape(t) for t in TITLES)
 
@@ -99,7 +99,8 @@ NIGERIAN_NAME_FRAGMENTS = {
     "adebayo", "adeyemi", "oluwaseun", "folake", "olamide", "temitope",
     "adewale", "oluwafemi", "bunmi", "yetunde", "babatunde", "ayodele",
     "olusegun", "abiodun", "oyinlola", "adeola", "kehinde", "taiwo",
-    "olawale", "adekunle", "ogundipe", "afolabi", "ade", "oladele",
+    "olawale", "adekunle", "ogundipe", "afolabi", "ade", "oladele", "omitogun",
+    "oluwatoni", "adebayo"
     # Hausa / Fulani
     "abdullahi", "ibrahim", "musa", "aisha", "fatima", "yusuf", "sani",
     "bello", "aliyu", "hassan", "hussaini", "muhammad", "mohammed",
@@ -114,7 +115,7 @@ NIGERIAN_NAME_FRAGMENTS = {
     "peter", "john", "james", "paul", "mary", "grace", "victoria",
     "comfort", "blessing", "joseph", "daniel", "david", "samuel",
     "emmanuel", "elizabeth", "faith", "peace", "precious", "patience",
-    "joy", "praise", "goodness", "esther", "ruth", "deborah",
+    "joy", "praise", "goodness", "esther", "ruth", "deborah", "victor",
 }
 
 

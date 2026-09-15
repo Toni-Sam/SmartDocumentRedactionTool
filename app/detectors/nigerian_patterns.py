@@ -20,8 +20,6 @@ from presidio_analyzer import PatternRecognizer, Pattern
 NIN_PATTERN = Pattern("NIN", r"\b[0-9]{11}\b", 0.6)
 BVN_PATTERN = Pattern("BVN", r"\b[0-9]{11}\b", 0.6)  # context-disambiguated
 PASSPORT_NG = Pattern("NG_PASSPORT", r"\bA[0-9]{8}\b", 0.85)
-PHONE_NG = Pattern("NG_PHONE", r"\b(\+?234|0)[789][01]\d{8}\b", 0.9)
-PLATE_NG = Pattern("NG_PLATE", r"\b[A-Z]{2,3}[-\s]?\d{3}[A-Z]{2}\b", 0.8)
 
 nin_recognizer = PatternRecognizer(
     supported_entity="NG_NIN",
@@ -43,10 +41,77 @@ passport_recognizer = PatternRecognizer(
     context=["passport", "international passport"]
 )
 
-phone_recognizer = PatternRecognizer(
+
+# ---------------------------------------------------------------------------
+# NG_PHONE - validator-based (see fix note below)
+# ---------------------------------------------------------------------------
+# FIX (OCR scanned-document testing, typed-scan sample):
+# The original pattern - r"\b(\+?234|0)[789][01]\d{8}\b" - required an
+# unbroken run of digits with zero separator tolerance. That's not just an
+# OCR artifact: Nigerian phone numbers are conventionally WRITTEN with
+# separators in the first place (e.g. "0803 123 4567", "+234 803 123 4567",
+# "0803-123-4567"), so the old pattern would miss correctly-typed, un-OCR'd
+# text too, not only scanned/noisy text. And OCR tokenization can introduce
+# its own separators independent of source formatting (Tesseract splits on
+# whitespace, so "0803 123 4567" always arrives as 3 separate word tokens
+# regardless of how the original document grouped them).
+#
+# Rather than hand-enumerate every grouping convention in the regex itself
+# (fragile - the next document format breaks it again), this uses the same
+# strategy as VinRecognizer below: a loose candidate match, then a
+# validate_result() check that strips all separators and verifies the
+# normalized digit string is a structurally valid Nigerian mobile number.
+# This tolerates whatever separator convention (or none) a given document
+# uses without needing to special-case each one.
+
+PHONE_NG = Pattern("NG_PHONE", r"\b(?:\+?234|0)[\d\s-]{10,14}\b", 0.6)
+
+
+class PhoneRecognizer(PatternRecognizer):
+    """
+    Validates a loosely-matched NG_PHONE candidate by stripping all
+    separators (spaces, hyphens) and checking the normalized digit string
+    against the real Nigerian mobile number shape: a 10-digit local number
+    starting with [789][01], after either a "234"/"+234" or a leading "0"
+    trunk prefix has been removed.
+    """
+
+    def validate_result(self, pattern_text: str):
+        digits = "".join(c for c in pattern_text if c.isdigit())
+
+        if digits.startswith("234"):
+            local = digits[3:]
+        elif digits.startswith("0"):
+            local = digits[1:]
+        else:
+            return False
+
+        if len(local) != 10:
+            return False
+
+        return local[0] in "789" and local[1] in "01"
+
+
+phone_recognizer = PhoneRecognizer(
     supported_entity="NG_PHONE",
-    patterns=[PHONE_NG]
+    patterns=[PHONE_NG],
+    context=["phone", "mobile", "contact number", "tel"]
 )
+
+
+# ---------------------------------------------------------------------------
+# NG_PLATE - direct patch (see fix note below)
+# ---------------------------------------------------------------------------
+# FIX (OCR scanned-document testing, typed-scan sample):
+# The original pattern allowed an optional separator between the letter
+# prefix and the digit group (r"[-\s]?" right after the letters), but
+# required the trailing 2 letters to follow the 3 digits with ZERO
+# separator - r"\d{3}[A-Z]{2}". A plate written as "KJA 456 XY" (space
+# before the trailing letters, as printed on the actual plate and as OCR
+# tokenizes it) never matched. Added the same optional [-\s]? before the
+# trailing letter group, matching the tolerance already given to the first
+# separator.
+PLATE_NG = Pattern("NG_PLATE", r"\b[A-Z]{2,3}[-\s]?\d{3}[-\s]?[A-Z]{2}\b", 0.8)
 
 plate_recognizer = PatternRecognizer(
     supported_entity="NG_PLATE",
@@ -122,7 +187,17 @@ drivers_license_recognizer = PatternRecognizer(
 # Tax Identification Number - FIRS hyphenated format only (8 digits-4 digits,
 # e.g. 12345678-0001). The plain 10-digit (JTB legacy) and 13-digit (2026 NRS)
 # formats are deliberately NOT included here - see the note below.
-TIN_NG = Pattern("NG_TIN", r"\b[0-9]{8}-[0-9]{4}\b", 0.85)
+#
+# FIX (OCR scanned-document testing, typed-scan sample):
+# Tesseract tokenizes "12345678-0001" as TWO words when the hyphen sits at a
+# natural OCR word break ("12345678" and "-0001"), and the word-joining logic
+# in scanned_pdf_parser.py inserts a single space between same-line word
+# tokens - so the reconstructed text becomes "12345678 -0001" (space before
+# the hyphen). The original pattern required the hyphen immediately after
+# the 8th digit with no tolerance for that space. Added \s? on both sides of
+# the hyphen to absorb it without loosening the pattern enough to match an
+# unrelated 12-digit run (the hyphen itself is still mandatory).
+TIN_NG = Pattern("NG_TIN", r"\b[0-9]{8}\s?-\s?[0-9]{4}\b", 0.85)
 
 tin_recognizer = PatternRecognizer(
     supported_entity="NG_TIN",
@@ -265,3 +340,26 @@ if __name__ == "__main__":
     else:
         for r in prose_results:
             print(f"UNEXPECTED MATCH: '{prose_text[r.start:r.end]}' (score: {r.score:.2f})")
+
+    # Regression test for the scanned-document format-tolerance fixes:
+    # OCR-reconstructed text with spaced phone numbers, a space-before-hyphen
+    # TIN, and a spaced plate number - all of which the ORIGINAL patterns
+    # missed against the typed-scan test sample.
+    scanned_style_text = (
+        "Phone Number: +234 803 245 6721 "
+        "Tax Identification No. (TIN): 10293847 -0001 "
+        "Vehicle Plate Number: KJA 456 XY "
+        "Next of Kin Phone: 0706 112 3345"
+    )
+
+    print("\n--- Scanned-format tolerance check (expect 4 hits: 2x NG_PHONE, NG_TIN, NG_PLATE) ---")
+    scanned_results = analyzer.analyze(
+        text=scanned_style_text,
+        language="en",
+        entities=["NG_PHONE", "NG_TIN", "NG_PLATE"],
+    )
+    if not scanned_results:
+        print("FAIL: no matches found - fixes did not take effect.")
+    else:
+        for r in sorted(scanned_results, key=lambda x: x.start):
+            print(f"{r.entity_type}: '{scanned_style_text[r.start:r.end]}' (score: {r.score:.2f})")

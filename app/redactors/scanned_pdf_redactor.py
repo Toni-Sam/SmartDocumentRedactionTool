@@ -38,10 +38,30 @@ underneath a JPEG/PNG to leak), so a solid fill IS the equivalent of true
 redaction here - once the pixels are overwritten and the file re-saved,
 the original pixel data is gone. No copy-paste leak vector exists for a
 flattened raster image the way it does for a PDF content stream.
+
+WHY THE OUTPUT IS RE-ORIENTED BEFORE SAVING
+-----------------------------------------------
+word_spans are in the *raw* input image's pixel space (as documented on
+redact_image_from_detections below), so drawing rects straight from
+word_spans onto Image.open(input_path) already lands boxes on the
+correct words even when the source photo/scan is rotated 90 deg from
+upright - that part was already working. What wasn't happening: nothing
+ever rotated the *final saved file* to upright, so a correctly-redacted
+image would still come out sideways for the user.
+
+_detect_rotation_angle() re-runs Tesseract OSD on the image *after*
+redaction (so it can't shift box placement) purely to get the clockwise
+correction needed, and the image is rotated to upright immediately
+before the final save. This is deliberately independent of
+scanned_pdf_parser.py's own OSD-based orientation correction (used
+upstream to get accurate word_spans in the first place) - duplicating a
+cheap OSD call here avoids coupling this module to that one's internal
+signature/return shape.
 """
 
 from typing import Dict, List
 
+import pytesseract
 from PIL import Image, ImageDraw
 
 from app.parsers.pdf_parser import PDFPageBlock
@@ -50,6 +70,26 @@ from app.parsers.pdf_parser import PDFPageBlock
 def _rects_for_span(block: PDFPageBlock, start: int, end: int) -> list:
     """Returns every word rect in `block` whose char range overlaps [start, end)."""
     return [ws.rect for ws in block.word_spans if ws.start < end and ws.end > start]
+
+
+def _detect_rotation_angle(image: Image.Image) -> int:
+    """
+    Returns the clockwise rotation (in degrees) Tesseract's orientation
+    and script detection (OSD) says is needed to bring `image` upright.
+
+    Returns 0 (no rotation) if OSD can't produce a confident reading -
+    e.g. too little text left after redaction, or a scan too noisy for
+    OSD - rather than raising, since a failed orientation check on an
+    already-redacted image should never block saving the output.
+    """
+    try:
+        osd = pytesseract.image_to_osd(image)
+        rotate_line = next(
+            line for line in osd.splitlines() if line.startswith("Rotate:")
+        )
+        return int(rotate_line.split(":")[1].strip())
+    except Exception:
+        return 0
 
 
 def redact_image_from_detections(
@@ -61,18 +101,23 @@ def redact_image_from_detections(
 ) -> Dict[str, int]:
     """
     Draws solid-fill rectangles directly onto the source image's pixels
-    for every approved entity in `entities`, then saves the result to
-    output_path. Mirrors pdf_redactor.redact_pdf_from_detections()'s
-    signature and per-word-rect approach (redacting each overlapping word
-    rect individually rather than one merged bbox per entity, so a
-    detected span that happens to wrap a line doesn't blank unrelated
-    text in between).
+    for every approved entity in `entities`, rotates the result upright
+    if needed, then saves it to output_path. Mirrors
+    pdf_redactor.redact_pdf_from_detections()'s signature and per-word-rect
+    approach (redacting each overlapping word rect individually rather
+    than one merged bbox per entity, so a detected span that happens to
+    wrap a line doesn't blank unrelated text in between).
 
     `block` is the PDFPageBlock returned by
     scanned_pdf_parser.extract_image_block() for this same input_path -
     its word_spans carry rects in raw image pixel space (not PDF
     point-space - there is no PDF page here), which is exactly what
     PIL.ImageDraw needs.
+
+    Box placement happens entirely before any rotation, so a rotated
+    source photo/scan still gets its boxes drawn in the correct spots;
+    the upright-rotation pass afterward only affects how the final file
+    is oriented for the user, never where the redactions land.
 
     Returns a summary dict: {"pages": 1, "entities_redacted": n} - kept
     in the same shape as pdf_redactor's summary dict (pages=1 always,
@@ -92,6 +137,14 @@ def redact_image_from_detections(
             # exactly that, so no conversion needed.
             draw.rectangle([rect.x0, rect.y0, rect.x1, rect.y1], fill=fill_color)
         entities_redacted += 1
+
+    angle = _detect_rotation_angle(image)
+    if angle:
+        # Tesseract's "Rotate" value is the clockwise correction needed
+        # to reach upright; PIL's rotate() turns counter-clockwise for
+        # positive degrees, so negate it. expand=True so the canvas
+        # swaps width/height for 90/270 corrections instead of cropping.
+        image = image.rotate(-angle, expand=True)
 
     image.save(output_path)
 

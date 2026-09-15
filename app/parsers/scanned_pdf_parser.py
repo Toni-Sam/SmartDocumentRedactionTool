@@ -190,7 +190,7 @@ def _ocr_image_to_block(
     """
     oriented = _correct_orientation(image)
     preprocessed = _preprocess_for_ocr(oriented)
-    ocr_data = pytesseract.image_to_data(preprocessed, output_type=Output.DICT)
+    ocr_data = pytesseract.image_to_data(preprocessed, output_type=Output.DICT, config="--psm 6",)
 
     n = len(ocr_data["text"])
     words = []
