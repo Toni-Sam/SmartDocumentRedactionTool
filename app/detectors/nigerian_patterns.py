@@ -10,6 +10,9 @@ that's called out in a comment rather than silently guessed at - see the
 NUBAN/NHIS note near the bottom.
 """
 
+import json
+from pathlib import Path
+
 from presidio_analyzer import PatternRecognizer, Pattern
 
 
@@ -181,7 +184,7 @@ DRIVERS_LICENSE_NG = Pattern(
 drivers_license_recognizer = PatternRecognizer(
     supported_entity="NG_DRIVERS_LICENSE",
     patterns=[DRIVERS_LICENSE_NG],
-    context=["driver's license", "driving licence", "FRSC", "DL number"]
+    context=["driver's license", "driving license", "FRSC"]
 )
 
 # Tax Identification Number - FIRS hyphenated format only (8 digits-4 digits,
@@ -285,6 +288,66 @@ nhis_recognizer = PatternRecognizer(
 # of the two. This is a real limitation, not a bug to chase.
 
 
+# ---------------------------------------------------------------------------
+# NG_NAME_GAZETTEER - Yoruba name gazetteer (deny-list, not regex)
+# ---------------------------------------------------------------------------
+# PROBLEM THIS SOLVES: MasakhaNER's model (masakhaner_detector.py) infers
+# names from sentence context, so an isolated name with no surrounding
+# sentence structure (e.g. sitting alone on a signature line, with no
+# "Name:" label for local_context_detector.py to trigger on either) can be
+# missed by both of those layers entirely. This recognizer adds a third,
+# independent check: an exact-match lookup against a real list of names,
+# which needs no context at all to fire.
+#
+# DATA SOURCE: PER-tagged spans mined from MasakhaNER's Yoruba CoNLL splits
+# (1.0 + 2.0 combined) via scripts/build_yoruba_name_gazetteer.py. Dataset
+# license: CC-BY-NC-4.0 (Adelani et al., 2021/2022) - non-commercial use
+# only, fine for this capstone. See that script's docstring for the full
+# citation and a note on scope: these are names as they occur in
+# Yoruba-language news text, not a curated Yoruba-ethnicity name list, so
+# coverage includes some non-Yoruba public figures too. That's treated as
+# acceptable extra recall for this project's purpose, not noise.
+#
+# WHY deny_list INSTEAD OF A CUSTOM REGEX: Presidio's PatternRecognizer
+# supports deny_list natively - an exact phrase/token match against a
+# list, no regex needed. This is the correct tool for "does this text
+# contain one of these known strings", as opposed to "does this text match
+# this shape" (which is what every other recognizer above does).
+#
+# WHY THIS NEEDS NO CHANGES TO merger.py: this recognizer's source is
+# "presidio" and its entity_type is "PERSON_NAME", but PERSON_NAME isn't
+# in PATTERN_PREFERRED_TYPES - so on any overlap with an actual
+# masakhaner or local_context detection, those still win outright via
+# their own source-based priority checks, unconditionally, regardless of
+# score. This recognizer only ever contributes a NEW detection when
+# nothing else caught the name at all - exactly the gap it exists to
+# patch - or corroborates/widens an existing same-type span via the
+# existing union-widening logic on genuine overlap.
+#
+# CONFIDENCE SCORE: 0.65. High enough that it isn't routinely discarded
+# against Presidio's own default spaCy PERSON detections (which use a
+# different entity_type, "PERSON", and never actually compete with this
+# one - see the note in merger.py's docstring/comments on that if it's
+# ever unified), but deliberately below MasakhaNER's typical confidence
+# so it never looks more authoritative than a genuine model inference in
+# any tie-break scenario.
+YORUBA_NAME_GAZETTEER_PATH = Path(__file__).resolve().parent.parent / "data" / "yoruba_names_gazetteer.json"
+
+
+def _load_yoruba_name_gazetteer() -> list[str]:
+    with open(YORUBA_NAME_GAZETTEER_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+YORUBA_NAME_GAZETTEER = _load_yoruba_name_gazetteer()
+
+yoruba_name_recognizer = PatternRecognizer(
+    supported_entity="PERSON_NAME",
+    deny_list=YORUBA_NAME_GAZETTEER,
+    deny_list_score=0.65,
+)
+
+
 if __name__ == "__main__":
     from presidio_analyzer import AnalyzerEngine, RecognizerRegistry
 
@@ -302,6 +365,7 @@ if __name__ == "__main__":
     registry.add_recognizer(nysc_recognizer)
     registry.add_recognizer(cac_rc_recognizer)
     registry.add_recognizer(nhis_recognizer)
+    registry.add_recognizer(yoruba_name_recognizer)
 
     analyzer = AnalyzerEngine(registry=registry)
 
@@ -363,3 +427,18 @@ if __name__ == "__main__":
     else:
         for r in sorted(scanned_results, key=lambda x: x.start):
             print(f"{r.entity_type}: '{scanned_style_text[r.start:r.end]}' (score: {r.score:.2f})")
+
+    # New: isolated-name gazetteer check - a bare name with NO surrounding
+    # sentence context and NO "Name:" label, simulating a signature line.
+    # This is the exact failure mode the gazetteer recognizer exists to fix.
+    isolated_name_text = "Adebayo"
+
+    print("\n--- Isolated-name gazetteer check (expect PERSON_NAME hit, no context needed) ---")
+    isolated_results = analyzer.analyze(
+        text=isolated_name_text, language="en", entities=["PERSON_NAME"]
+    )
+    if isolated_results:
+        for r in isolated_results:
+            print(f"{r.entity_type}: '{isolated_name_text[r.start:r.end]}' (score: {r.score:.2f})")
+    else:
+        print("FAIL: gazetteer did not fire on an isolated known name.")
