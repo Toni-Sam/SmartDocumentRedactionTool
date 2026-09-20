@@ -33,16 +33,38 @@ if str(PROJECT_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 # app/dispatcher.py exposes a DetectionSession dataclass plus a set of
 # free functions that operate on it (NOT methods): detect_document,
-# get_entities_for_review, set_approval, set_all_approved, apply_redactions,
-# redact_document. DetectionSession itself is never constructed directly -
-# always go through detect_document(input_path).
+# get_entities_for_review, set_approval, set_all_approved,
+# set_approval_by_types, apply_redactions, redact_document.
+# DetectionSession itself is never constructed directly - always go
+# through detect_document(input_path).
 from app.dispatcher import (
     DetectionSession,
     detect_document,
     get_entities_for_review,
     set_approval,
     set_all_approved,
+    set_approval_by_types,
     apply_redactions,
+)
+
+# Audit report (redaction report) generation - on-demand only, via the
+# "Generate report" button below. Never called automatically as part of
+# the detect/approve/apply flow.
+from app.redaction_report import (
+    build_docx_records,
+    build_pdf_records,
+    generate_audit_report,
+)
+
+# app/redaction_policies.py defines named subsets of entity types
+# ("Financial IDs only", "Names + Location only", "Full NDPA profile")
+# plus a "Custom" path for an arbitrary user-chosen set. See that
+# module's docstring for how a policy relates to the approval flow above.
+from app.redaction_policies import (
+    PRESET_POLICIES,
+    DEFAULT_POLICY_NAME,
+    ALL_ENTITY_TYPES,
+    resolve_policy_types,
 )
 
 
@@ -95,8 +117,20 @@ if "redacted_filename" not in st.session_state:
     st.session_state.redacted_filename = None
 if "redaction_summary" not in st.session_state:
     st.session_state.redaction_summary = None
+if "report_bytes" not in st.session_state:
+    st.session_state.report_bytes = None
+if "report_filename" not in st.session_state:
+    st.session_state.report_filename = None
 if "approval_revision" not in st.session_state:
     st.session_state.approval_revision = 0
+if "applied_policy_signature" not in st.session_state:
+    # Tracks which (policy_name, custom_types) combo was last APPLIED to
+    # session.entities via set_approval_by_types() - not just selected in
+    # the widgets. Compared against the widgets' current value each rerun
+    # so a policy is only (re-)applied when the user actually changes it,
+    # not on every unrelated rerun (e.g. toggling one checkbox in the
+    # review table below shouldn't stomp on other rows' manual overrides).
+    st.session_state.applied_policy_signature = None
 
 
 def friendly_error_message(exc: Exception, ext: str) -> str:
@@ -143,7 +177,15 @@ def reset_session():
     st.session_state.redacted_bytes = None
     st.session_state.redacted_filename = None
     st.session_state.redaction_summary = None
+    st.session_state.report_bytes = None
+    st.session_state.report_filename = None
     st.session_state.approval_revision = 0
+    st.session_state.applied_policy_signature = None
+    # Clear the policy widgets' own persisted values too, so a newly
+    # uploaded document starts back at the default policy rather than
+    # carrying over whatever the previous document had selected.
+    st.session_state.pop("policy_name", None)
+    st.session_state.pop("policy_custom_types", None)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +277,56 @@ if not entities:
     st.stop()
 
 st.subheader(f"Detected entities ({len(entities)})")
+
+# ---------------------------------------------------------------------------
+# Redaction policy — sets default approval per entity type
+# ---------------------------------------------------------------------------
+# This runs BEFORE the manual approve/reject controls below, and only
+# changes the STARTING approval state for each entity type - every row is
+# still individually reviewable afterward via its own checkbox, exactly
+# as before this feature existed.
+st.markdown("**Redaction policy**")
+
+policy_options = list(PRESET_POLICIES.keys()) + ["Custom"]
+default_index = policy_options.index(DEFAULT_POLICY_NAME)
+
+policy_name = st.selectbox(
+    "Choose which categories of PII to redact",
+    policy_options,
+    index=default_index,
+    key="policy_name",
+    help="Sets which entity types are approved for redaction by default. "
+    "You can still uncheck or check any individual match in the table below.",
+)
+
+if policy_name == "Custom":
+    custom_types = st.multiselect(
+        "Select entity types to redact",
+        sorted(ALL_ENTITY_TYPES),
+        key="policy_custom_types",
+    )
+else:
+    custom_types = None
+
+policy_signature = (policy_name, tuple(sorted(custom_types)) if custom_types else None)
+
+if st.session_state.applied_policy_signature != policy_signature:
+    allowed_types = resolve_policy_types(policy_name, custom_types)
+    set_approval_by_types(session, allowed_types)
+    st.session_state.applied_policy_signature = policy_signature
+    # New approval state per entity - bump the revision counter so the
+    # checkboxes below (keyed on approval_revision) re-render with their
+    # new default values instead of showing stale widget state.
+    st.session_state.approval_revision += 1
+    st.rerun()
+
+st.caption(
+    f"Policy '{policy_name}' pre-approves "
+    f"{sum(1 for e in entities if e.get('approved', True))}/{len(entities)} "
+    "detected entities. Adjust individual rows below as needed."
+)
+
+st.divider()
 
 col_a, col_b, col_c = st.columns([1, 1, 4])
 with col_a:
@@ -347,11 +439,60 @@ if st.session_state.get("redaction_summary"):
     if unit_count is not None:
         metric_cols[2].metric(unit_label, unit_count)
 
-    known_keys = {"entities_matched", "entities_redacted", "paragraphs_redacted", "pages", "output"}
+    known_keys = {
+        "entities_matched", "entities_redacted", "paragraphs_redacted", "pages",
+        "output", "audit_trail",  # audit_trail has its own "Generate report"
+        # section below and (for DOCX) carries the actual redacted text
+        # value - it must never land in this generic debug JSON dump.
+    }
     extra = {k: v for k, v in summary.items() if k not in known_keys}
     if extra:
         with st.expander("Additional details"):
             st.json(extra)
+
+    # -----------------------------------------------------------------
+    # Audit report (on-demand)
+    # -----------------------------------------------------------------
+    st.subheader("Audit report")
+    st.caption(
+        "Generates a PDF listing what was redacted: entity type, confidence "
+        "score, and location. Does not include the original redacted text."
+    )
+
+    audit_trail = summary.get("audit_trail")
+
+    if audit_trail is None:
+        # Currently true for standalone images (redact_image_from_detections
+        # doesn't produce an audit_trail yet - see scanned_pdf_redactor.py).
+        st.info(
+            "Audit report generation isn't available yet for this file type."
+        )
+    elif st.button("Generate report"):
+        if session.file_type == "docx":
+            records = build_docx_records(audit_trail)
+        else:  # "pdf" - includes scanned pages within a PDF, same audit_trail shape
+            records = build_pdf_records(audit_trail)
+
+        report_name = f"audit_report_{Path(uploaded_file.name).stem}.pdf"
+        report_path = str(Path(tempfile.gettempdir()) / report_name)
+
+        try:
+            generate_audit_report(records, source_filename=uploaded_file.name, output_path=report_path)
+            with open(report_path, "rb") as f:
+                st.session_state.report_bytes = f.read()
+            st.session_state.report_filename = report_name
+        except Exception as exc:
+            st.error("Something went wrong while generating the audit report.")
+            with st.expander("Technical details"):
+                st.exception(exc)
+
+    if st.session_state.report_bytes is not None:
+        st.download_button(
+            label=f"Download {st.session_state.report_filename}",
+            data=st.session_state.report_bytes,
+            file_name=st.session_state.report_filename,
+            mime="application/pdf",
+        )
 
 if st.session_state.redacted_bytes is not None:
     st.download_button(

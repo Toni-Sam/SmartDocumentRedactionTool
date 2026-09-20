@@ -73,6 +73,12 @@ USAGE
 
     # One-shot convenience (everything approved, no review step):
     summary = redact_document("client_form.docx", "client_form_redacted.docx")
+
+    # Redaction-policy flow (set default approvals by entity type, then
+    # let the human review/override as usual):
+    from app.redaction_policies import resolve_policy_types
+    allowed = resolve_policy_types("Financial IDs only")
+    set_approval_by_types(session, allowed)
 """
 
 import os
@@ -259,6 +265,25 @@ def set_all_approved(session: DetectionSession, approved: bool) -> None:
         e["approved"] = approved
 
 
+def set_approval_by_types(session: DetectionSession, allowed_types: set) -> None:
+    """
+    Sets approved=True for every entity whose entity_type is in
+    allowed_types, and approved=False for everything else.
+
+    This is the mechanism a redaction policy (see app/redaction_policies.py)
+    uses to set default approvals for a chosen policy - e.g. "Financial
+    IDs only" resolves to a set of entity_type strings, and this function
+    applies that set as a bulk starting point. It doesn't detect anything
+    new and doesn't touch entities' other fields - a human reviewer can
+    still flip any individual entity afterward via set_approval(), exactly
+    as with set_all_approved(). Calling this again with a different
+    allowed_types (e.g. the user switches policy) simply re-applies from
+    scratch; it does not merge with whatever approvals were set before.
+    """
+    for e in session.entities:
+        e["approved"] = e.get("entity_type", "UNKNOWN") in allowed_types
+
+
 # ---------------------------------------------------------------------------
 # Step 2: apply
 # ---------------------------------------------------------------------------
@@ -351,6 +376,23 @@ if __name__ == "__main__":
         rejected_id = session.entities[0]["id"]
         set_approval(session, rejected_id, False)
         print(f"\n(simulated review: rejected entity id={rejected_id})")
+
+    # Demonstrate a redaction policy: restrict to financial IDs only, then
+    # show that non-financial entities are no longer approved.
+    from app.redaction_policies import resolve_policy_types
+    financial_only = resolve_policy_types("Financial IDs only")
+    set_approval_by_types(session, financial_only)
+    approved_count = sum(1 for e in session.entities if e["approved"])
+    print(
+        f"\n(simulated policy: 'Financial IDs only' -> "
+        f"{approved_count}/{len(session.entities)} entities now approved)"
+    )
+    # Restore full approval before the actual apply step below, so this
+    # inline test's final output matches its historical behavior (only
+    # the single manually-rejected entity above stays un-redacted).
+    for e in session.entities:
+        e["approved"] = True
+    set_approval(session, rejected_id, False)
 
     print(f"\nStep 2: apply_redactions() -> {output_path}")
     summary = apply_redactions(session, output_path)

@@ -100,7 +100,7 @@ NIGERIAN_NAME_FRAGMENTS = {
     "adewale", "oluwafemi", "bunmi", "yetunde", "babatunde", "ayodele",
     "olusegun", "abiodun", "oyinlola", "adeola", "kehinde", "taiwo",
     "olawale", "adekunle", "ogundipe", "afolabi", "ade", "oladele", "omitogun",
-    "oluwatoni", "adebayo"
+    "oluwatoni", "adebayo", "OMITOGUN"
     # Hausa / Fulani
     "abdullahi", "ibrahim", "musa", "aisha", "fatima", "yusuf", "sani",
     "bello", "aliyu", "hassan", "hussaini", "muhammad", "mohammed",

@@ -33,6 +33,34 @@ Given the (PDFPageBlock, entities) pairs, this module:
 Redacting per-word-rect (rather than one merged bounding box per entity)
 matters when a matched entity spans a line break or column - a single
 merged bbox could accidentally cover unrelated text in between.
+
+AUDIT TRAIL
+-----------
+redact_pdf_from_detections() now also returns an `audit_trail` list: one
+entry per entity that was ACTUALLY redacted (i.e. it resolved to at least
+one word rect and a redact_annot was added for it) - not just every entity
+that was passed in as "approved". An approved entity whose span doesn't
+resolve to any word rect (defensive edge case; shouldn't normally happen
+given entities come from this same page's word_spans in the first place)
+is silently skipped today, same as before, and is correctly excluded from
+the audit trail too, since nothing was actually redacted for it.
+
+Unlike docx_redactor.py's audit_trail (which aggregates by text value,
+since DOCX redacts by text match document-wide), each PDF entity is
+already a distinct, individually-tracked occurrence - so each audit_trail
+entry here corresponds 1:1 with one entity, no aggregation needed.
+
+Each entry is shaped like:
+    {
+        "entity_type": str,
+        "score": Optional[float],
+        "source": Optional[str],
+        "page_num": int,  # 0-indexed, matches PDFPageBlock.page_num
+    }
+
+Deliberately excludes the entity's original text - same reasoning as
+docx_redactor.py: an audit artifact shouldn't carry the PII it's
+documenting the removal of.
 """
 
 import fitz
@@ -51,7 +79,7 @@ def redact_pdf_from_detections(
     output_path: str,
     page_results: List[Tuple[PDFPageBlock, list]],
     fill_color=(0, 0, 0),
-) -> Dict[str, int]:
+) -> Dict:
     """
     Applies redactions for a pre-computed set of (PDFPageBlock, entities)
     pairs - no detection happens here. `entities` for each block is a list
@@ -64,10 +92,19 @@ def redact_pdf_from_detections(
     then matches a human-reviewed manifest's spans onto those blocks by
     page number before calling this.
 
-    Returns a summary dict: {"pages": n, "entities_redacted": n}
+    Returns a summary dict:
+        {
+            "pages": int,               # len(page_results)
+            "entities_redacted": int,   # count of entities that resolved
+                                         # to at least one rect and were
+                                         # actually redacted
+            "audit_trail": list[dict],  # one entry per entity actually
+                                         # redacted - see module docstring
+        }
     """
     doc = fitz.open(input_path)
     entities_redacted = 0
+    audit_trail = []
 
     try:
         for block, entities in page_results:
@@ -80,6 +117,12 @@ def redact_pdf_from_detections(
                 for rect in rects:
                     page.add_redact_annot(rect, fill=fill_color)
                 entities_redacted += 1
+                audit_trail.append({
+                    "entity_type": entity.get("entity_type", "UNKNOWN"),
+                    "score": entity.get("score"),
+                    "source": entity.get("source"),
+                    "page_num": block.page_num,
+                })
 
             # Burns the annotations into the content stream - permanently
             # removes the underlying text, not just a visual cover.
@@ -89,17 +132,21 @@ def redact_pdf_from_detections(
     finally:
         doc.close()
 
-    return {"pages": len(page_results), "entities_redacted": entities_redacted}
+    return {
+        "pages": len(page_results),
+        "entities_redacted": entities_redacted,
+        "audit_trail": audit_trail,
+    }
 
 
-def redact_pdf(input_path: str, output_path: str, fill_color=(0, 0, 0)) -> Dict[str, int]:
+def redact_pdf(input_path: str, output_path: str, fill_color=(0, 0, 0)) -> Dict:
     """
     One-pass convenience wrapper: runs detection + redaction end-to-end on
     a text-based PDF. Kept for backward compatibility / quick one-off use;
     the two-step dispatcher flow calls redact_pdf_from_detections()
     directly instead, with a human-reviewed entity list.
 
-    Returns a summary dict: {"pages": n, "entities_redacted": n}
+    Returns a summary dict: {"pages", "entities_redacted", "audit_trail"}
     """
     page_results = detect_pii_in_pdf(input_path)
     return redact_pdf_from_detections(input_path, output_path, page_results, fill_color)
@@ -116,3 +163,9 @@ if __name__ == "__main__":
     summary = redact_pdf(input_path, output_path)
     print(f"Redacted {summary['entities_redacted']} entities across {summary['pages']} pages")
     print(f"Output saved to: {output_path}")
+    print("\naudit_trail:")
+    for entry in summary["audit_trail"]:
+        print(
+            f"  [{entry['entity_type']}] page={entry['page_num'] + 1} "
+            f"(score={entry['score']}, source={entry['source']})"
+        )
