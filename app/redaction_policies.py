@@ -78,7 +78,14 @@ PRESET_POLICIES = {
     "Full NDPA profile": FULL_NDPA_PROFILE,
 }
 
-DEFAULT_POLICY_NAME = "Full NDPA profile"
+DEFAULT_POLICY_NAME = "Custom"
+# Starting policy is "Custom" with nothing pre-selected - the user must
+# actively choose either a preset or their own set of entity types before
+# anything is approved by default. This was a deliberate reversal of the
+# earlier default (which started at "Full NDPA profile", i.e. everything
+# approved) - see the GUI's handling of this in streamlit_app.py, which
+# shows a hint when "Custom" has no types selected yet rather than
+# silently redacting nothing.
 
 
 # ---------------------------------------------------------------------------
