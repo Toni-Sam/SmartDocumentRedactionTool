@@ -1,0 +1,19 @@
+# .streamlit/config.toml
+# ------------------------------------------------------------------
+# Place this file at PROJECT_ROOT/.streamlit/config.toml (create the
+# .streamlit folder if it doesn't already exist). Streamlit picks this
+# up automatically for any app launched from the project root - no code
+# changes needed for the theme to take effect.
+#
+# Palette: deep teal primary (used for buttons, active tab underline,
+# slider/checkbox accents) on a clean white background, with a very
+# light teal-gray for sidebar/expander panels. Kept deliberately calm
+# and neutral so the RED/PURPLE/GRAY highlight colors in the document
+# preview (app/preview.py) stay the ones that draw the eye.
+
+[theme]
+primaryColor = "#0F6E6A"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F4"
+textColor = "#1B2430"
+font = "sans serif"

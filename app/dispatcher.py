@@ -79,9 +79,18 @@ USAGE
     from app.redaction_policies import resolve_policy_types
     allowed = resolve_policy_types("Financial IDs only")
     set_approval_by_types(session, allowed)
+
+    # Manual mark: human supplies a value the pipeline missed (e.g. a
+    # unique registration number with no pattern recognizer). Matches
+    # case-insensitively, document-wide, and adds one pre-approved entity
+    # per occurrence found (see add_manual_entity()'s own docstring):
+    added = add_manual_entity(session, "REG-2024-8841", "MANUAL_PII")
+    if not added:
+        print("No matches found for that value.")
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -285,6 +294,154 @@ def set_approval_by_types(session: DetectionSession, allowed_types: set) -> None
 
 
 # ---------------------------------------------------------------------------
+# Manual entity addition (human marks PII the pipeline missed)
+# ---------------------------------------------------------------------------
+# Covers the "mark" half of manual mark/unmark - "unmark" already exists via
+# set_approval()/set_all_approved() above, since a manually added entity is
+# just another dict in session.entities with "approved" flippable exactly
+# like an auto-detected one.
+#
+# Matching here is DELIBERATELY different from the automatic pipeline:
+# case-insensitive, partial (substring) search, document-wide, redacting
+# EVERY occurrence found - agreed to cover cases like a unique registration
+# number with no pattern recognizer, where the human already knows the
+# exact value and just wants it found and redacted everywhere it appears.
+#
+# - DOCX: mirrors how redact_docx() already matches - by exact TEXT VALUE,
+#   document-wide. Since that matching is case-sensitive, case-insensitivity
+#   is handled here at ADD time instead: each paragraph is searched
+#   case-insensitively, and one entity is created per DISTINCT actual
+#   casing found in the document (so "ABC123" and "abc123" both get their
+#   own entity and both get redacted, even though redact_docx() itself
+#   never does case-insensitive matching). Reuses docx_redactor.py's own
+#   paragraph walkers so "found here" and "found by the redactor later"
+#   can never disagree.
+# - PDF/image: mirrors how these are already tracked - per OCCURRENCE, via
+#   start/end offsets into each PDFPageBlock's `text`. Offsets are computed
+#   from the SAME `block.text` pdf_parser.py already built (and word_spans
+#   were built against), so pdf_redactor.py's existing _rects_for_span()
+#   lookup resolves them correctly with no changes to pdf_redactor.py.
+
+def add_manual_entity(session: DetectionSession, query: str, entity_type: str) -> list:
+    """
+    Adds a human-supplied PII value to `session` after detect_document()
+    has already run, so it flows through review/redaction exactly like an
+    auto-detected entity (appears pre-approved in session.entities /
+    get_entities_for_review(), can be unchecked via set_approval() same as
+    any other row, and is picked up by apply_redactions() unchanged).
+
+    `query` is matched case-insensitively as a substring, document-wide -
+    see the section docstring above for why this differs from the
+    automatic pipeline's exact-span matching, and how DOCX vs PDF/image
+    differ in what gets created.
+
+    Returns the list of newly created entity dicts. An empty list means
+    `query` wasn't found anywhere in the document - callers (the GUI)
+    should surface a "no matches found" message and let the human retry
+    with a different value, per the agreed behavior; nothing is raised for
+    this expected case.
+    """
+    query = query.strip()
+    if not query:
+        return []
+
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    next_id = max((e.get("id", -1) for e in session.entities), default=-1) + 1
+    new_entities = []
+
+    if session.file_type == "docx":
+        from docx import Document
+        from itertools import count as _count
+        from app.redactors.docx_redactor import (
+            _iter_body_and_table_paragraphs,
+            _iter_header_footer_paragraphs,
+            _paragraph_full_text,
+        )
+
+        document = Document(session.input_path)
+        counter = _count(1)
+        all_paragraphs = (
+            list(_iter_body_and_table_paragraphs(document, counter))
+            + list(_iter_header_footer_paragraphs(document, counter))
+        )
+
+        found_texts = set()
+        for paragraph, _ in all_paragraphs:
+            full_text = _paragraph_full_text(paragraph)
+            if not full_text:
+                continue
+            for m in pattern.finditer(full_text):
+                found_texts.add(full_text[m.start():m.end()])
+
+        already_manual = {
+            e["text"] for e in session.entities
+            if e.get("source") == "manual" and e.get("entity_type") == entity_type
+        }
+
+        for text_value in found_texts:
+            if text_value in already_manual:
+                continue  # already added in a prior call with the same type
+            entity = {
+                "text": text_value,
+                "entity_type": entity_type,
+                "score": 1.0,
+                "source": "manual",
+                "id": next_id,
+                "approved": True,
+            }
+            next_id += 1
+            session.entities.append(entity)
+            new_entities.append(entity)
+
+        return new_entities
+
+    if session.file_type in ("pdf", "image"):
+        for block, block_entities in session._page_results:
+            for m in pattern.finditer(block.text):
+                start, end = m.start(), m.end()
+
+                already_added = any(
+                    e.get("source") == "manual"
+                    and e.get("start") == start
+                    and e.get("end") == end
+                    and e.get("entity_type") == entity_type
+                    for e in block_entities
+                )
+                if already_added:
+                    continue  # already added in a prior call, same span+type
+
+                entity = {
+                    "text": block.text[start:end],
+                    "entity_type": entity_type,
+                    "start": start,
+                    "end": end,
+                    "score": 1.0,
+                    "source": "manual",
+                    "id": next_id,
+                    "approved": True,
+                    "page_num": block.page_num,
+                    "page_type": block.page_type,
+                }
+                next_id += 1
+
+                # For PDF, block_entities is a distinct list from
+                # session.entities (aggregated from many blocks) - append
+                # to both. For image, block_entities IS session.entities
+                # (same list object, single block) - the identity check
+                # below skips the second append so it isn't added twice.
+                block_entities.append(entity)
+                if not any(existing is entity for existing in session.entities):
+                    session.entities.append(entity)
+                new_entities.append(entity)
+
+        return new_entities
+
+    raise NotImplementedError(
+        f"Manual entity addition isn't supported for file_type={session.file_type!r} yet."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step 2: apply
 # ---------------------------------------------------------------------------
 
@@ -393,6 +550,21 @@ if __name__ == "__main__":
     for e in session.entities:
         e["approved"] = True
     set_approval(session, rejected_id, False)
+
+    # Demonstrate manual entity addition: a value the pipeline wouldn't
+    # have flagged on its own (no matching pattern recognizer), added by
+    # a human reviewer and matched case-insensitively/document-wide.
+    print("\n--- Manual entity addition check ---")
+    manual_query = "REG-2024-8841"
+    added = add_manual_entity(session, manual_query, "MANUAL_PII")
+    if added:
+        print(f"Added {len(added)} manual entity(ies) for {manual_query!r}:")
+        for e in added:
+            page_info = f" page={e['page_num']}" if "page_num" in e else ""
+            print(f"  id={e['id']:<3} [{e['entity_type']}] {e['text']!r}{page_info}")
+    else:
+        print(f"No matches found for {manual_query!r} (expected unless the "
+              f"test document happens to contain that exact value).")
 
     print(f"\nStep 2: apply_redactions() -> {output_path}")
     summary = apply_redactions(session, output_path)
